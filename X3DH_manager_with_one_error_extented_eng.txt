@@ -1,0 +1,81 @@
+	Here the essence of the code, its functions, and other details will be explained. A general explanation of X3DH.
+
+	- We have two structures, a pair of keys, and a set of saved keys of 4 types.
+
+	- Full functionality:
+		- Generation of a key pair for IK, EK, SPK, OPK (generateKeyPair())
+		- Generation of a key pair (generateKeyPairSign())
+		- Generation of identity keys (generateIK())
+		- Generation of ephemeral keys (generateEK())
+		- Generation of keys signed by an identity key (generateSPK(..., ...))
+		- Generation of one-time keys (generateOPK())
+		- Saving keys (saveKeys(..., ...))
+		- Loading keys (loadKey(...))
+		- Loading a private key (loadPrivateKey(...))
+		- Loading a public key (loadPublicKey(...))
+		- Converting a key to bytes (convertPKeyToByteArray(...))
+		- Implementation of each DH stage (computeSharedSecret(..., ...))
+		- Implementation of the final X3DH, i.e., determining the shared secret (generateSharedSecret(..., ..., ..., ..., ...))
+
+	- Description of each function
+	1. Function generateKeyPair():The generation of keys is based on EC (X25519). The structure of the public key EVP_PKEY_CTX* is used. 
+	Its peculiarity lies in the fact that the same context cannot be used simultaneously in two threads. Rvalue is implemented using 
+	EVP_PKEY_CTX_new_id, which allows it to return the  generated pair. If there is an error, it returns NULL. In this case, EVP_PKEY_keygen_init() 
+	performs the initialization of the key, which is  previously set (reserved). If the length is 0, an error occurs. Now the key is generated using 
+	EVP_PKEY_keygen. The initialized variable pkey is used to store the keys. It was decided to use BIO for the secure usage of keys, as this 
+	function will be used extensively. Input-output abstraction accepts multiple inputs and outputs from the program, transparently handles SSL 
+	connections, unsecured network connections, and file input-output. In the function, in-memory BIO is used. It uses memory for its own 
+	input-output, which expands to accommodate data storage. Data written to the in-memory BIO is stored in the BUF_MEM structure, which is 
+	correspondingly expanded to save data. If an error occurs during verification, the chain is freed. Then the keys are written in PEM format. 
+	A pointer is created, which implements the basic BUF_MEM structure (this is a macro). The function returns a key pair.
+
+	2. Function generateKeyPairSign(): Works similarly to generateKeyPair, but uses X25519.
+
+	3. Function generateIK(): Uses the generateKeyPair() function.
+
+	4. Function generateEK(): Uses the generateKeyPair() function.
+
+	5. Function generateSPK(const QByteArray& IK_privateKey): Generates a signed prekey using the provided identity private key.
+
+	6. Function saveKeys(const QByteArray &keyData, const QString &fileName): Saves keys to a file.
+
+	7. Function loadKey(const QString& filename): Loads keys from a file.
+
+	8. Function loadPrivateKey(const QByteArray& keyData): Performs a check to ensure the data exists and that the key format is correct. 
+	Then it creates a BIO stream for it and reads the data.
+
+	9. Function loadPublicKey(const QByteArray& keyData): Identical to the loadPrivateKey(const QByteArray& keyData) function.
+
+	10. Function convertPKeyToByteArray(EVP_PKEY* pkey): Checks if the key exists, then creates a stream, writes to the buffer, and 
+	eventually frees the resources.
+
+	11. Function signData(const QByteArray& data, const QByteArray& privateKey): Creates a stream for the private key, then loads the key 
+	using PEM_read_bio_PrivateKey. A signature context (ctx) is created and initialized (EVP_DigestSignInit), and the data is signed 
+	(EVP_DigestSign).
+
+	12. Function computeSharedSecret(const KeyPair& localKey, const QByteArray& remotePublicKey): Intended for generating a shared secret
+	through several steps of intermediate secret calculation using the Diffie-Hellman algorithm and subsequent application of HKDF to derive 
+	the final key. In the first step, input data is validated to ensure all keys (IK_A, EK_A, IK_B, SPK_B, OPK_B) are not empty. If any 
+	of them are missing, an exception std::invalid_argument is thrown. Next, intermediate secrets (DH1, DH2, DH3, DH4) are calculated using 
+	the computeSharedSecret() function. These secrets are defined as follows:
+	DH1: Shared secret between IK_A and SPK_B.
+	DH2: Shared secret between EK_A and IK_B.
+	DH3: Shared secret between EK_A and SPK_B.
+	DH4: Shared secret between EK_A and OPK_B.
+	All intermediate values are logged in hexadecimal representation for debugging. After this, all intermediate secrets are combined into 
+	a single byte array concatenatedSecret, which is checked for emptiness. If it is empty, an exception std::runtime_error is thrown.
+	Then HKDF with the SHA-256 hash algorithm is used to generate the final key. The HKDF context is created using EVP_KDF and EVP_KDF_CTX.
+	An empty value is used as the salt, The combined secret concatenatedSecret is used as the key. Parameters for HKDF are set through 
+	the OSSL_PARAM array, including: Hash algorithm (SHA256), Salt (salt), Key (key). The final key is derived using EVP_KDF_derive and 
+	stored in the outKey array with a length of 32 bytes (256 bits). After completion, the EVP_KDF_CTX and EVP_KDF contexts are freed to 
+	prevent memory leaks. The final key is returned as a QByteArray object. The EVP_KDF context and the OSSL_PARAM structure provide flexibility 
+	in configuring HKDF, including the choice of the hash algorithm.
+
+	13. Function signData(const QByteArray& data, const QByteArray& privateKey): Uses input-output abstraction, where rvalue employs the 
+	BIO_new_mem_buf function. It takes the length of the byte data in the buffer; if the length is -1, it is considered null, and its 
+	length is determined by strlen. BIO is configured in read mode, making it impossible to write to it. This is useful when certain data needs 
+	to be made accessible from a static memory area in the form of BIO, which must remain unchanged. The type EVP_MD is a structure for 
+	implementing the digest method. Using this method, EVP_MD_CTX_new allocates a digest context. Then, data is signed using EVP_DigestSignInit, 
+	where the digest and private key are utilized. The digest can be NULL if the signing algorithm is not confirmed; it outputs the mdname 
+	parameter, and props is set to NULL. Where ENGINE is used, the implementation of the signing and digest algorithms takes place. The function 
+	returns the signature.
